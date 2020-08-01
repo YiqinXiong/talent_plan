@@ -20,7 +20,7 @@ type StandAloneStorage struct {
 
 func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	// Your Code Here (1).
-	log.Info(conf.DBPath)
+	log.Infof("call NewStandAloneStorage(), conf.DBPath = %v", conf.DBPath)
 	//create subPath "kv" and "raft" for new Badger DB on disk
 	kvEngine := engine_util.CreateDB("kv", conf)
 	raftEngine := engine_util.CreateDB("raft", conf)
@@ -49,7 +49,7 @@ func (s *StandAloneStorage) Stop() error {
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	// Your Code Here (1).
-	log.Info("call s.Reader()")
+	log.Infof("call s.Reader(), ctx = %v", ctx)
 	// ctx is nil in project1 test
 	return &StandAloneStorageReader{
 		// use read-only transaction
@@ -60,7 +60,7 @@ func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader,
 
 func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
 	// Your Code Here (1).
-	log.Info("call s.Write()")
+	log.Infof("call s.Write(), ctx = %v", ctx)
 	// a new transaction
 	var txn *badger.Txn
 	for _, m := range batch {
@@ -113,7 +113,7 @@ type StandAloneStorageReader struct {
 }
 
 func (sr *StandAloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) {
-	log.Info("call sr.GetCF()")
+	log.Infof("call sr.GetCF(), cf = %v, key = %v", cf, key)
 	var (
 		val []byte
 		err error
@@ -132,6 +132,7 @@ func (sr *StandAloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) 
 }
 
 func (sr *StandAloneStorageReader) IterCF(cf string) engine_util.DBIterator {
+	log.Infof("call sr.IterCF(), cf = %v", cf)
 	//NewCFIterator returns *BadgerIterator, which implement the engine_util.DBIterator interface.
 	var dbIter engine_util.DBIterator
 	//log.Info(cf)
