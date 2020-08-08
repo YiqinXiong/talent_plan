@@ -81,6 +81,7 @@ type MemoryStorage struct {
 	hardState pb.HardState
 	snapshot  pb.Snapshot
 	// ents[i] has raft log position i+snapshot.Metadata.Index
+	// 也就是说ents[0].Index = 偏移量
 	ents []pb.Entry
 }
 
