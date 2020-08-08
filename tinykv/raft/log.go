@@ -58,25 +58,14 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	sli, err := storage.LastIndex()
-	if err != nil {
-		panic(err)
-	}
-	sfi, err := storage.FirstIndex()
-	if err != nil {
-		panic(err)
-	}
-	entries, err := storage.Entries(sfi, sli+1)
-	if err != nil {
-		panic(err)
-	}
-	//log.Infof("offset(first): %d  stabled(last): %d  entries: %v", sfi, sli, entries)
+	firstIdx, _ := storage.FirstIndex()
+	lastIdx, _ := storage.LastIndex()
+	entries, _ := storage.Entries(firstIdx, lastIdx+1)
 	return &RaftLog{
 		storage: storage,
-		stabled: sli,
+		stabled: lastIdx,
 		entries: entries,
-		applied: sfi - 1}
-	return nil
+		applied: firstIdx - 1}
 }
 
 // We need to compact the log entries in some point of time like
@@ -89,27 +78,49 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) > 0 {
+		return l.entries[l.stabled-l.entries[0].Index+1 : len(l.entries)]
+	}
+	return make([]pb.Entry, 0)
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	offset, _ := l.storage.FirstIndex()
+	if len(l.entries) > 0 {
+		return l.entries[l.applied-offset+1 : l.committed-offset+1]
+	}
+	return make([]pb.Entry, 0)
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	idx, err := l.storage.LastIndex()
-	if err != nil {
-		panic(err)
+	if len(l.entries) == 0 {
+		return None
 	}
-	return idx
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return l.storage.Term(i)
+	sliceIdx := l.getSliceIdx(i)
+	if sliceIdx < 0 || len(l.entries) == 0 {
+		return l.storage.Term(i)
+	}
+	return l.entries[sliceIdx].Term, nil
+}
+
+// from EntryIndex to SliceIndex
+func (l *RaftLog) getSliceIdx(i uint64) int {
+	offset, _ := l.storage.FirstIndex()
+	return int(i - offset)
+}
+
+// from SliceIndex to EntryIndex
+func (l *RaftLog) getEntryIdx(i int) uint64 {
+	offset, _ := l.storage.FirstIndex()
+	return uint64(i) + offset
 }

@@ -17,6 +17,8 @@ package raft
 import (
 	"errors"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"sort"
+
 	"math/rand"
 )
 
@@ -200,15 +202,42 @@ func (r *Raft) sendMsg(m pb.Message) {
 }
 
 // append一个entry
-func (r *Raft) appendEntries(entry pb.Entry) {
-	r.RaftLog.entries = append(r.RaftLog.entries, entry)
+func (r *Raft) appendEntries(entry *pb.Entry) {
+	r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	// 参照paper的P7
+	// 领导人任期号
+	term := r.Term
+	// 领导人的Id，便于跟随者重定向请求
+	leaderId := r.id
+	// 新的日志条目紧随之前的索引值
+	prevLogIndex := r.Prs[to].Next - 1
+	// prevLogIndex条目的任期号
+	prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
+	// 准备存储的日志条目，这里把heartbeat和附加日志RPC分开，这里只管附加日志
+	entries := make([]*pb.Entry, 0)
+	for i := r.RaftLog.getSliceIdx(prevLogIndex + 1); i < len(r.RaftLog.entries); i++ {
+		entries = append(entries, &r.RaftLog.entries[i])
+	}
+	// 领导人已经提交的日志的索引值
+	leaderCommit := r.RaftLog.committed
+	// 发送附加日志RPC
+	r.sendMsg(pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		From:    leaderId,
+		To:      to,
+		Term:    term,
+		Commit:  leaderCommit,
+		LogTerm: prevLogTerm,
+		Index:   prevLogIndex,
+		Entries: entries,
+	})
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -330,6 +359,37 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	// 设置lead
 	r.Lead = r.id
+
+	/* 2AB need */
+	lastIndex := r.RaftLog.LastIndex()
+	r.heartbeatElapsed = 0
+	for peer := range r.Prs {
+		// 对应paper中在领导人里经常改变的部分，选举后重新初始化
+		if peer == r.id {
+			r.Prs[peer] = &Progress{Next: lastIndex + 2, Match: lastIndex + 1}
+		} else {
+			// next初始化为领导人最后索引值+1
+			r.Prs[peer] = &Progress{Next: lastIndex + 1, Match: None}
+		}
+	}
+	// 添加空entry到当前任期
+	r.appendEntries(&pb.Entry{
+		Term:  r.Term,
+		Index: r.RaftLog.LastIndex() + 1,
+	})
+	// 对其他结点广播append的信息
+	if len(r.Prs) == 1 {
+		// 最大的被提交的索引值就是已经复制的最高索引值，不用广播
+		r.RaftLog.committed = r.Prs[r.id].Match
+	} else {
+		// 广播附加日志的RPC
+		for eachPeer := range r.Prs {
+			if eachPeer != r.id {
+				r.sendAppend(eachPeer)
+			}
+		}
+	}
+	/* 2AB need */
 }
 
 func (r *Raft) stepFollower(m pb.Message) error {
@@ -343,8 +403,14 @@ func (r *Raft) stepFollower(m pb.Message) error {
 				r.sendRequestVote(eachPeer)
 			}
 		}
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgSnapshot:
+		//r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
 	}
 	return nil
 }
@@ -365,6 +431,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		if m.Term == r.Term {
 			r.becomeFollower(m.Term, m.From)
 		}
+		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
@@ -386,11 +453,17 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 				r.becomeFollower(r.Term, None)
 			}
 		}
+	case pb.MessageType_MsgSnapshot:
+		//if m.Term == r.Term {
+		//	r.becomeFollower(m.Term, m.From)
+		//}
+		//r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		// 如果收到新的Leader的附加日志RPC，转变为Follower
 		if m.Term == r.Term {
 			r.becomeFollower(m.Term, m.From)
 		}
+		r.handleHeartbeat(m)
 	}
 	return nil
 }
@@ -404,8 +477,81 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			}
 			r.sendHeartbeat(eachPeer)
 		}
+	case pb.MessageType_MsgPropose:
+		for i, entry := range m.Entries {
+			entry.Term = r.Term
+			entry.Index = r.RaftLog.LastIndex() + uint64(i) + 1
+			r.appendEntries(entry)
+		}
+		r.Prs[r.id] = &Progress{
+			Match: r.RaftLog.LastIndex(),
+			Next:  r.RaftLog.LastIndex() + 1,
+		}
+		// 对其他结点广播append的信息
+		if len(r.Prs) == 1 {
+			// 最大的被提交的索引值就是已经复制的最高索引值，不用广播
+			r.RaftLog.committed = r.Prs[r.id].Match
+		} else {
+			// 广播附加日志的RPC
+			for eachPeer := range r.Prs {
+				if eachPeer != r.id {
+					r.sendAppend(eachPeer)
+				}
+			}
+		}
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+		if m.Term >= r.Term {
+			if m.Reject {
+				index := m.Index
+				sliceIndex := sort.Search(len(r.RaftLog.entries),
+					func(i int) bool {
+						return r.RaftLog.entries[i].Term > m.LogTerm
+					})
+				if sliceIndex > 0 && r.RaftLog.entries[sliceIndex-1].Term == m.LogTerm {
+					index = r.RaftLog.getEntryIdx(sliceIndex)
+				}
+				r.Prs[m.From].Next = index
+				r.sendAppend(m.From)
+			} else {
+				r.Prs[m.From].Match = m.Index
+				r.Prs[m.From].Next = m.Index + 1
+				// 取Prs[].Match作为切片match[]
+				match := make(uint64Slice, len(r.Prs))
+				i := 0
+				for _, prs := range r.Prs {
+					match[i] = prs.Match
+					i++
+				}
+				// 对切片排序，其半数index即为满足大多数matchIndex[i]>N的N
+				sort.Sort(match)
+				n := match[(len(r.Prs)-1)/2]
+				// 如果存在一个满足N > commitIndex的N
+				// 且满足大多数matchIndex[i]>N成立
+				// 且log[N].term==currentTerm成立
+				// 则令commitIndex = N
+				logTerm, _ := r.RaftLog.Term(n)
+				if n > r.RaftLog.committed && logTerm == r.Term {
+					r.RaftLog.committed = n
+					// 广播附加日志的RPC
+					for eachPeer := range r.Prs {
+						if eachPeer == r.id {
+							continue
+						}
+						r.sendAppend(eachPeer)
+					}
+				}
+			}
+		}
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgSnapshot:
+		//r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+		r.sendAppend(m.From)
 	}
 	return nil
 }
@@ -435,8 +581,73 @@ func (r *Raft) Step(m pb.Message) error {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	r.electionElapsed = 0
+	r.randElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
+	r.Lead = m.From
+	response := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      m.From,
+		Term:    r.Term,
+		Reject:  true,
+		LogTerm: None,
+		Index:   None,
+	}
+	// 如果term < currentTerm就返回false
+	if m.Term < r.Term {
+		r.sendMsg(response)
+		return
+	}
+	// 如果prevLogIndex > r.RaftLog.LastIndex()，返回false
+	prevLogIndex := m.Index
+	if prevLogIndex > r.RaftLog.LastIndex() {
+		response.Index = r.RaftLog.LastIndex() + 1
+		r.sendMsg(response)
+		return
+	}
+	// 如果prevLogIndex位置条目的任期号与prevLogTerm不匹配就返回false
+	logTerm, _ := r.RaftLog.Term(prevLogIndex)
+	prevLogTerm := m.LogTerm
+	if logTerm != prevLogTerm {
+		response.LogTerm = logTerm
+		// 找到任期号为logTerm的最小的index（匹配的最小index）
+		response.Index = r.RaftLog.getEntryIdx(
+			sort.Search(r.RaftLog.getSliceIdx(prevLogIndex+1),
+				func(i int) bool {
+					return r.RaftLog.entries[i].Term == logTerm
+				}))
+		r.sendMsg(response)
+		return
+	}
+	for i, entry := range m.Entries {
+		if entry.Index <= r.RaftLog.LastIndex() {
+			// 用新日志的索引查找任期号
+			newEntryIndex := entry.Index
+			oldTerm, _ := r.RaftLog.Term(newEntryIndex)
+			// 若已存在的日志和新日志发生冲突（索引相同任期不同），则删除这一条和之后所有的
+			if oldTerm != entry.Term {
+				sliceIdx := r.RaftLog.getSliceIdx(newEntryIndex)
+				r.RaftLog.entries[sliceIdx] = *entry
+				r.RaftLog.entries = r.RaftLog.entries[:sliceIdx+1]
+				r.RaftLog.stabled = min(r.RaftLog.stabled, newEntryIndex-1)
+			}
+		} else {
+			// 附加日志中尚未存在的任何新条目
+			for j := i; j < len(m.Entries); j++ {
+				r.appendEntries(m.Entries[j])
+			}
+			break
+		}
+	}
+	// 如果leaderCommit > commitIndex，令commitIndex等于leaderCommit和新日志条目索引值中
+	newIndex := m.Index + uint64(len(m.Entries))
+	if m.Commit > r.RaftLog.committed {
+		r.RaftLog.committed = min(m.Commit, newIndex)
+	}
+	response.Reject = false
+	response.Index = r.RaftLog.LastIndex()
+	r.sendMsg(response)
 }
-
 
 // handleRequestVote handle RequestVote RPC request
 func (r *Raft) handleRequestVote(m pb.Message) {
