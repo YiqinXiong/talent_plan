@@ -504,17 +504,11 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgAppendResponse:
 		if m.Term >= r.Term {
 			if m.Reject {
-				index := m.Index
-				sliceIndex := sort.Search(len(r.RaftLog.entries),
-					func(i int) bool {
-						return r.RaftLog.entries[i].Term > m.LogTerm
-					})
-				if sliceIndex > 0 && r.RaftLog.entries[sliceIndex-1].Term == m.LogTerm {
-					index = r.RaftLog.getEntryIdx(sliceIndex)
-				}
-				r.Prs[m.From].Next = index
+				// 减少Next并重试，未优化
+				r.Prs[m.From].Next--
 				r.sendAppend(m.From)
 			} else {
+				// 更新follower的Match和Next
 				r.Prs[m.From].Match = m.Index
 				r.Prs[m.From].Next = m.Index + 1
 				// 取Prs[].Match作为切片match[]
@@ -633,13 +627,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			}
 		} else {
 			// 附加日志中尚未存在的任何新条目
-			for j := i; j < len(m.Entries); j++ {
-				r.appendEntries(m.Entries[j])
-			}
-			break
+			r.appendEntries(m.Entries[i])
 		}
 	}
-	// 如果leaderCommit > commitIndex，令commitIndex等于leaderCommit和新日志条目索引值中
+	// 如果leaderCommit > commitIndex，令commitIndex等于leaderCommit和新日志条目索引值中较小的
 	newIndex := m.Index + uint64(len(m.Entries))
 	if m.Commit > r.RaftLog.committed {
 		r.RaftLog.committed = min(m.Commit, newIndex)
