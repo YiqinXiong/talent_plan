@@ -87,7 +87,7 @@ func NewRawNode(config *Config) (*RawNode, error) {
 		Commit: r.RaftLog.committed,
 	}
 	rn := &RawNode{
-		Raft:      r,
+		Raft: r,
 		lastReady: Ready{
 			SoftState:        ss,
 			HardState:        hs,
@@ -182,17 +182,15 @@ func (rn *RawNode) Ready() Ready {
 		Vote:   rn.Raft.Vote,
 		Commit: rn.Raft.RaftLog.committed,
 	}
-	// 判断状态是否更新
-	if lastSs == nil || !isSoftStateEqual(lastSs, ss) {
+	// 判断状态是否一致
+	if !isSoftStateEqual(lastSs, ss) || !isHardStateEqual(lastHs, hs) {
 		rd.SoftState = ss
-	}
-	if IsEmptyHardState(lastHs) || !isHardStateEqual(lastHs, hs) {
 		rd.HardState = hs
 	}
-	// 将消息清空
-	rn.Raft.msgs = make([]pb.Message, 0)
 	// 更新lastReady
 	rn.lastReady = rd
+	// 清空rn.Raft.msgs
+	rn.Raft.msgs = make([]pb.Message, 0)
 	return rd
 }
 
@@ -211,11 +209,11 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	if len(rd.Entries) > 0 {
-		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
-	}
 	if len(rd.CommittedEntries) > 0 {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+	if len(rd.Entries) > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
 }
 
