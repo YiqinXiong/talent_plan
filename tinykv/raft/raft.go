@@ -179,6 +179,10 @@ func newRaft(c *Config) *Raft {
 	// 填补Prs
 	lastIdx := r.RaftLog.LastIndex()
 	firstIdx, _ := r.RaftLog.storage.FirstIndex()
+	hs, cs, _ := r.RaftLog.storage.InitialState()
+	if c.peers == nil {
+		c.peers = cs.Nodes
+	}
 	var match uint64
 	for _, eachPeer := range c.peers {
 		match = firstIdx - 1
@@ -190,7 +194,6 @@ func newRaft(c *Config) *Raft {
 	}
 	// newRaft成为Follower
 	r.becomeFollower(0, None)
-	hs, _, _ := r.RaftLog.storage.InitialState()
 	r.randElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.Term, r.Vote, r.RaftLog.committed = hs.GetTerm(), hs.GetVote(), hs.GetCommit()
 	return r
@@ -218,7 +221,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// 新的日志条目紧随之前的索引值
 	prevLogIndex := r.Prs[to].Next - 1
 	// prevLogIndex条目的任期号
-	prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
+	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
+	if err != nil {
+		panic(err)
+	}
 	// 准备存储的日志条目，这里把heartbeat和附加日志RPC分开，这里只管附加日志
 	entries := make([]*pb.Entry, 0)
 	for i := r.RaftLog.getSliceIdx(prevLogIndex + 1); i < len(r.RaftLog.entries); i++ {

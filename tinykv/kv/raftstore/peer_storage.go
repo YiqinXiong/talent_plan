@@ -312,30 +312,21 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		return nil
 	}
 
-	first, _ := ps.FirstIndex()
-	last := entries[len(entries)-1].Index
-
-	// shortcut if there is no new entry.
-	if last < first {
-		return nil
-	}
-	// truncate compacted entries
-	if first > entries[0].Index {
-		entries = entries[first-entries[0].Index:]
-	}
-
 	regionId := ps.region.GetId()
 	for _, entry := range entries {
 		raftWB.SetMeta(meta.RaftLogKey(regionId, entry.Index), &entry)
 	}
+
+	ps.raftState.LastIndex = entries[len(entries)-1].Index
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
+
 	prevLast, _ := ps.LastIndex()
-	if prevLast > last {
-		for i := last + 1; i <= prevLast; i++ {
+	if prevLast > ps.raftState.LastIndex {
+		for i := ps.raftState.LastIndex + 1; i <= prevLast; i++ {
 			raftWB.DeleteMeta(meta.RaftLogKey(regionId, i))
 		}
 	}
-	ps.raftState.LastIndex = last
-	ps.raftState.LastTerm = entries[len(entries)-1].Term
+
 	return nil
 }
 
@@ -359,6 +350,10 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	raftWB := new(engine_util.WriteBatch)
+	ps.Append(ready.Entries, raftWB)
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
+	raftWB.WriteToDB(ps.Engines.Raft)
 	return nil, nil
 }
 
