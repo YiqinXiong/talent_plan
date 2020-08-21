@@ -99,7 +99,8 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return None
+		storageLastIdx, _ := l.storage.LastIndex()
+		return storageLastIdx
 	}
 	return l.entries[len(l.entries)-1].Index
 }

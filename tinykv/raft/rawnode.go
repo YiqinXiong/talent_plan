@@ -91,9 +91,9 @@ func NewRawNode(config *Config) (*RawNode, error) {
 		lastReady: Ready{
 			SoftState:        ss,
 			HardState:        hs,
-			Entries:          r.RaftLog.unstableEntries(),
-			CommittedEntries: r.RaftLog.nextEnts(),
-			Messages:         r.msgs,
+			//Entries:          r.RaftLog.unstableEntries(),
+			//CommittedEntries: r.RaftLog.nextEnts(),
+			//Messages:         r.msgs,
 		},
 	}
 	return rn, nil
@@ -164,6 +164,7 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
+	fmt.Println("call Ready()")
 	rd := Ready{
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
@@ -183,12 +184,15 @@ func (rn *RawNode) Ready() Ready {
 		Commit: rn.Raft.RaftLog.committed,
 	}
 	// 判断状态是否一致
-	if !isSoftStateEqual(lastSs, ss) || !isHardStateEqual(lastHs, hs) {
+	if !isSoftStateEqual(lastSs, ss) {
 		rd.SoftState = ss
+		rn.lastReady.SoftState = ss
+	}
+	if !isHardStateEqual(lastHs, hs) {
 		rd.HardState = hs
 	}
 	// 更新lastReady
-	rn.lastReady = rd
+	//rn.lastReady = rd
 	// 清空rn.Raft.msgs
 	rn.Raft.msgs = make([]pb.Message, 0)
 	return rd
@@ -197,6 +201,15 @@ func (rn *RawNode) Ready() Ready {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	fmt.Println("call HasReady()")
+	hs := pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+	if !IsEmptyHardState(hs) && !isHardStateEqual(hs, rn.lastReady.HardState) {
+		return true
+	}
 	if len(rn.Raft.RaftLog.unstableEntries()) == 0 &&
 		len(rn.Raft.RaftLog.nextEnts()) == 0 &&
 		len(rn.Raft.msgs) == 0 {
