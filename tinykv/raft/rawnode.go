@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -89,8 +88,8 @@ func NewRawNode(config *Config) (*RawNode, error) {
 	rn := &RawNode{
 		Raft: r,
 		lastReady: Ready{
-			SoftState:        ss,
-			HardState:        hs,
+			SoftState: ss,
+			HardState: hs,
 			//Entries:          r.RaftLog.unstableEntries(),
 			//CommittedEntries: r.RaftLog.nextEnts(),
 			//Messages:         r.msgs,
@@ -164,15 +163,15 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	fmt.Println("call Ready()")
+	//fmt.Println("call Ready()")
 	rd := Ready{
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
 	}
-	fmt.Println(rn.lastReady.SoftState)
+	//fmt.Println("rawnode.go/Ready():", rn.lastReady.SoftState)
 	lastSs := rn.lastReady.SoftState
-	fmt.Println(rn.lastReady.HardState)
+	//fmt.Println("rawnode.go/Ready():", rn.lastReady.HardState)
 	lastHs := rn.lastReady.HardState
 	ss := &SoftState{
 		Lead:      rn.Raft.Lead,
@@ -201,15 +200,7 @@ func (rn *RawNode) Ready() Ready {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	fmt.Println("call HasReady()")
-	hs := pb.HardState{
-		Term:   rn.Raft.Term,
-		Vote:   rn.Raft.Vote,
-		Commit: rn.Raft.RaftLog.committed,
-	}
-	if !IsEmptyHardState(hs) && !isHardStateEqual(hs, rn.lastReady.HardState) {
-		return true
-	}
+	//fmt.Println("call HasReady()")
 	if len(rn.Raft.RaftLog.unstableEntries()) == 0 &&
 		len(rn.Raft.RaftLog.nextEnts()) == 0 &&
 		len(rn.Raft.msgs) == 0 {
