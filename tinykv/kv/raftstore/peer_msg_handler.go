@@ -2,6 +2,8 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -43,6 +45,98 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	if !d.RaftGroup.HasReady() {
+		return
+	}
+	// 调用SaveReadyState函数更新状态
+	rd := d.RaftGroup.Ready()
+	d.peerStorage.SaveReadyState(&rd)
+	// 调用send函数传递message
+	d.Send(d.ctx.trans, rd.Messages)
+	// 依次对CommittedEntries进行处理
+	wb := new(engine_util.WriteBatch)
+	for _, entry := range rd.CommittedEntries {
+		req := &raft_cmdpb.Request{}
+		req.Unmarshal(entry.Data)
+		// 根据CmdType分别执行get、put、delete、snap相应操作
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Get:
+		case raft_cmdpb.CmdType_Put:
+			putReq := req.GetPut()
+			wb.SetCF(putReq.GetCf(), putReq.GetKey(), putReq.GetValue())
+		case raft_cmdpb.CmdType_Delete:
+			delReq := req.GetDelete()
+			wb.DeleteCF(delReq.GetCf(), delReq.GetKey())
+		case raft_cmdpb.CmdType_Snap:
+		}
+		// 操作完毕后判断entry中的index、term是否在proposals有对应元素存在
+		// 若存在则构造相应的response并调用该元素的callback的done函数，向客户端返回消息
+		if len(d.proposals) == 0 {
+			return
+		}
+		// 取出首个proposal
+		firstProposal := d.proposals[0]
+		// 判断index和term
+		if firstProposal.index == entry.Index && firstProposal.term == entry.Term {
+			rp := &raft_cmdpb.RaftCmdResponse{
+				Header:    &raft_cmdpb.RaftResponseHeader{},
+				Responses: nil,
+			}
+			switch req.CmdType {
+			case raft_cmdpb.CmdType_Get:
+				// apply之后更新AppliedIndex
+				d.peerStorage.applyState.AppliedIndex = entry.Index
+				// 获取get的value
+				wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+				wb.WriteToDB(d.peerStorage.Engines.Kv)
+				getReq := req.GetGet()
+				val, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, getReq.GetCf(), getReq.GetKey())
+				rp.Responses = []*raft_cmdpb.Response{{
+					CmdType: raft_cmdpb.CmdType_Get,
+					Get: &raft_cmdpb.GetResponse{
+						Value:                val,
+						XXX_NoUnkeyedLiteral: struct{}{},
+						XXX_unrecognized:     nil,
+						XXX_sizecache:        0,
+					}}}
+				wb = new(engine_util.WriteBatch)
+			case raft_cmdpb.CmdType_Put:
+				rp.Responses = []*raft_cmdpb.Response{{
+					CmdType: raft_cmdpb.CmdType_Put,
+					Put: &raft_cmdpb.PutResponse{
+						XXX_NoUnkeyedLiteral: struct{}{},
+						XXX_unrecognized:     nil,
+						XXX_sizecache:        0,
+					}}}
+			case raft_cmdpb.CmdType_Delete:
+				rp.Responses = []*raft_cmdpb.Response{{
+					CmdType: raft_cmdpb.CmdType_Delete,
+					Delete: &raft_cmdpb.DeleteResponse{
+						XXX_NoUnkeyedLiteral: struct{}{},
+						XXX_unrecognized:     nil,
+						XXX_sizecache:        0,
+					}}}
+			case raft_cmdpb.CmdType_Snap:
+				// apply之后更新AppliedIndex
+				d.peerStorage.applyState.AppliedIndex = entry.Index
+				wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+				wb.WriteToDB(d.peerStorage.Engines.Kv)
+				rp.Responses = []*raft_cmdpb.Response{{
+					CmdType: raft_cmdpb.CmdType_Snap,
+					Snap: &raft_cmdpb.SnapResponse{
+						Region:               d.Region(),
+						XXX_NoUnkeyedLiteral: struct{}{},
+						XXX_unrecognized:     nil,
+						XXX_sizecache:        0,
+					}}}
+				firstProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+				wb = new(engine_util.WriteBatch)
+			}
+			firstProposal.cb.Done(rp)
+			// 更新proposals
+			d.proposals = d.proposals[1:]
+		}
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +208,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	for _, req := range msg.Requests {
+		data, _ := req.Marshal()
+		d.RaftGroup.Propose(data)
+	}
+	r := d.RaftGroup.Raft
+	d.proposals = append(d.proposals, &proposal{index: r.RaftLog.LastIndex(), term: r.Term, cb: cb,})
 }
 
 func (d *peerMsgHandler) onTick() {
